@@ -31,6 +31,50 @@ subprojects {
         }
     }
 }
+
+// اضافه کردن namespace برای flutter_midi و سایر پکیج‌های Flutter
+subprojects {
+    afterEvaluate {
+        if (project.name != "app") {
+            try {
+                val android = project.extensions.findByName("android")
+                if (android != null) {
+                    // استفاده از reflection برای تنظیم namespace
+                    val namespaceField = try {
+                        android::class.java.getDeclaredField("namespace")
+                    } catch (e: NoSuchFieldException) {
+                        null
+                    }
+                    
+                    if (namespaceField != null) {
+                        namespaceField.isAccessible = true
+                        val currentNamespace = namespaceField.get(android) as? String
+                        
+                        if (currentNamespace.isNullOrEmpty()) {
+                            // استخراج از AndroidManifest
+                            val manifestFile = project.file("src/main/AndroidManifest.xml")
+                            val packageName = if (manifestFile.exists()) {
+                                val manifestContent = manifestFile.readText()
+                                val packageMatch = Regex("package=\"([^\"]+)\"").find(manifestContent)
+                                packageMatch?.groupValues?.get(1)
+                            } else null
+                            
+                            val finalNamespace = packageName ?: if (project.name == "flutter_midi") {
+                                "com.example.flutter_midi"
+                            } else null
+                            
+                            if (finalNamespace != null) {
+                                namespaceField.set(android, finalNamespace)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // خطا نادیده گرفته می‌شود - ممکن است namespace از قبل تنظیم شده باشد
+            }
+        }
+    }
+}
 subprojects {
     project.evaluationDependsOn(":app")
 }

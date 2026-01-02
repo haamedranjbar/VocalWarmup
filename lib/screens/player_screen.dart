@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/warmup.dart';
 import '../theme/app_theme.dart';
+import '../services/midi_service.dart';
 
 enum VocalRange {
   bass,
@@ -26,8 +28,124 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen> {
   VocalRange selectedRange = VocalRange.tenor;
   bool isPlaying = false;
-  Duration currentPosition = const Duration(seconds: 45);
+  Duration currentPosition = Duration.zero;
   Duration get totalDuration => widget.warmup.duration;
+  
+  final MidiService _midiService = MidiService();
+  Timer? _playbackTimer;
+  Timer? _progressTimer;
+  int _currentNoteIndex = 0;
+  List<int> _scaleNotes = [];
+  
+  @override
+  void initState() {
+    super.initState();
+    _initializeMidi();
+    _updateScaleNotes();
+  }
+  
+  Future<void> _initializeMidi() async {
+    try {
+      await _midiService.loadSoundFont();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطا در بارگذاری صدا: $e')),
+        );
+      }
+    }
+  }
+  
+  void _updateScaleNotes() {
+    final rootNote = _getRootNoteForRange(selectedRange);
+    _scaleNotes = MidiService.getScaleNotes(rootNote, 'major pentatonic');
+    _currentNoteIndex = 0;
+  }
+  
+  String _getRootNoteForRange(VocalRange range) {
+    switch (range) {
+      case VocalRange.bass:
+        return 'C2';
+      case VocalRange.baritone:
+        return 'C3';
+      case VocalRange.tenor:
+        return 'C4';
+      case VocalRange.alto:
+        return 'C4';
+      case VocalRange.mezzo:
+        return 'C5';
+      case VocalRange.soprano:
+        return 'C5';
+    }
+  }
+  
+  void _startPlayback() {
+    if (_scaleNotes.isEmpty) return;
+    
+    setState(() {
+      isPlaying = true;
+    });
+    
+    // تایمر برای پخش نت‌ها بر اساس BPM
+    final beatDuration = Duration(milliseconds: (60000 / widget.warmup.bpm).round());
+    _playbackTimer = Timer.periodic(beatDuration, (timer) {
+      if (!mounted || !isPlaying) {
+        timer.cancel();
+        return;
+      }
+      
+      // توقف نت قبلی
+      if (_currentNoteIndex > 0) {
+        _midiService.stopNote(_scaleNotes[_currentNoteIndex - 1]);
+      }
+      
+      // پخش نت جدید
+      if (_currentNoteIndex < _scaleNotes.length) {
+        _midiService.playNote(_scaleNotes[_currentNoteIndex]);
+        _currentNoteIndex++;
+      } else {
+        // شروع دوباره از ابتدا
+        _currentNoteIndex = 0;
+        _midiService.playNote(_scaleNotes[_currentNoteIndex]);
+        _currentNoteIndex++;
+      }
+    });
+    
+    // تایمر برای به‌روزرسانی progress
+    _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      if (!mounted || !isPlaying) {
+        timer.cancel();
+        return;
+      }
+      
+      setState(() {
+        currentPosition = currentPosition + const Duration(milliseconds: 100);
+        if (currentPosition >= totalDuration) {
+          _stopPlayback();
+        }
+      });
+    });
+  }
+  
+  void _stopPlayback() {
+    setState(() {
+      isPlaying = false;
+      currentPosition = Duration.zero;
+      _currentNoteIndex = 0;
+    });
+    
+    _playbackTimer?.cancel();
+    _progressTimer?.cancel();
+    _midiService.stopAllNotes();
+  }
+  
+  @override
+  void dispose() {
+    _playbackTimer?.cancel();
+    _progressTimer?.cancel();
+    _midiService.stopAllNotes();
+    super.dispose();
+  }
 
   String _formatDuration(Duration duration) {
     final minutes = duration.inMinutes;
@@ -41,9 +159,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
     return Scaffold(
       backgroundColor: AppTheme.backgroundDark,
       body: SafeArea(
@@ -512,9 +627,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               borderRadius: BorderRadius.circular(40),
                               child: InkWell(
                                 onTap: () {
-                                  setState(() {
-                                    isPlaying = !isPlaying;
-                                  });
+                                  if (isPlaying) {
+                                    _stopPlayback();
+                                  } else {
+                                    _startPlayback();
+                                  }
                                 },
                                 borderRadius: BorderRadius.circular(40),
                                 child: Container(
@@ -573,7 +690,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildVocalRangeChip(VocalRange range, String label) {
+  Widget                               _buildVocalRangeChip(VocalRange range, String label) {
     final isSelected = selectedRange == range;
 
     return Material(
@@ -583,8 +700,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: () {
+          if (isPlaying) {
+            _stopPlayback();
+          }
           setState(() {
             selectedRange = range;
+            _updateScaleNotes();
           });
         },
         borderRadius: BorderRadius.circular(12),
